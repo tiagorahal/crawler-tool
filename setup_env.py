@@ -104,7 +104,8 @@ def main():
         print("▶ Activate venv: .\\.venv\\Scripts\\Activate.ps1")
     else:
         print("▶ Activate venv: source .venv/bin/activate")
-    print("▶ Run app:       streamlit run app.py")
+    print("▶ Run app:       streamlit run app_crawler.py")
 
 if __name__ == "__main__":
     main()
+
