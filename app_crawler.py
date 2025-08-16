@@ -3,7 +3,7 @@
 HTML Structure Analyzer - Ferramenta para análise de estrutura HTML
 Facilita a criação de crawlers identificando elementos importantes
 Execute:
-    streamlit run app.py
+    streamlit run app_crawler.py
 """
 
 import streamlit as st
@@ -14,6 +14,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple, Any
 import time
 import platform
+import re
 
 # Configuração específica para Windows
 if platform.system() == 'Windows':
@@ -246,10 +247,13 @@ def analyze_lists(html_content: str) -> Dict:
             
             # Gera seletor CSS
             list_attrs = lst.attrs if hasattr(lst, 'attrs') else {}
-            if list_attrs.get('id'):
-                css_selector = f"#{list_attrs['id']}"
-            elif list_attrs.get('class'):
-                css_selector = f".{list_attrs['class'].split()[0]}"
+            list_id = list_attrs.get('id', '')
+            list_class = list_attrs.get('class', '')
+            
+            if list_id:
+                css_selector = f"#{list_id}"
+            elif list_class:
+                css_selector = f".{list_class.split()[0]}"
             else:
                 css_selector = list_type
             
@@ -269,6 +273,8 @@ def analyze_lists(html_content: str) -> Dict:
                 'xpath': f"//{list_type}",
                 'parent_tag': parent_tag,
                 'parent_class': parent_attrs.get('class', ''),
+                'list_id': list_id,
+                'list_class': list_class,
                 'items_preview': list_items_data[:10],  # Preview limitado para visualização
                 'all_items': list_items_data,  # TODOS os items
                 'avg_text_length': avg_text_length,
@@ -357,6 +363,8 @@ def analyze_lists(html_content: str) -> Dict:
                 'xpath': xpath,
                 'parent_tag': parent_tag,
                 'parent_class': parent_class,
+                'list_id': list_id,
+                'list_class': list_class,
                 'items_preview': list_items_data[:10],
                 'all_items': list_items_data,  # TODOS os items
                 'avg_text_length': avg_text_length,
@@ -456,6 +464,7 @@ def analyze_forms(html_content: str) -> Dict:
                     'name': inp_attrs.get('name', ''),
                     'id': inp_attrs.get('id', ''),
                     'placeholder': inp_attrs.get('placeholder', ''),
+                    'value': inp_attrs.get('value', ''),
                     'css_selector': f"{inp.tag}#{inp_attrs['id']}" if inp_attrs.get('id') else inp.tag,
                     'xpath': f"//{inp.tag}",
                     'html_sample': html_sample
@@ -529,6 +538,7 @@ def analyze_forms(html_content: str) -> Dict:
                     'name': inp.get('name', ''),
                     'id': inp_id,
                     'placeholder': inp.get('placeholder', ''),
+                    'value': inp.get('value', ''),
                     'css_selector': css_selector,
                     'xpath': get_xpath(inp),
                     'html_sample': html_sample
@@ -558,6 +568,8 @@ def analyze_navigation(html_content: str, base_url: str) -> Dict:
             link_attrs = link.attrs if hasattr(link, 'attrs') else {}
             href = link_attrs.get('href', '')
             text = link.text(strip=True) if hasattr(link, 'text') else ''
+            link_id = link_attrs.get('id', '')
+            link_class = link_attrs.get('class', '')
             
             # Classifica link
             if href.startswith('http'):
@@ -591,6 +603,8 @@ def analyze_navigation(html_content: str, base_url: str) -> Dict:
                 'href': href,
                 'type': link_type,
                 'parent_tag': parent_tag,
+                'link_id': link_id,
+                'link_class': link_class,
                 'css_selector': f"a[href='{href[:50]}']",
                 'html_sample': html_sample
             }
@@ -606,6 +620,8 @@ def analyze_navigation(html_content: str, base_url: str) -> Dict:
         for link in links[:100]:
             href = link.get('href', '')
             text = link.text_content().strip() if hasattr(link, 'text_content') else ''
+            link_id = link.get('id', '')
+            link_class = link.get('class', '')
             
             # Classifica link
             if href.startswith('http'):
@@ -638,6 +654,8 @@ def analyze_navigation(html_content: str, base_url: str) -> Dict:
                 'href': href,
                 'type': link_type,
                 'parent_tag': parent_tag,
+                'link_id': link_id,
+                'link_class': link_class,
                 'css_selector': f"a[href='{href[:50]}']",
                 'xpath': get_xpath(link),
                 'html_sample': html_sample
@@ -683,6 +701,7 @@ def analyze_content_structure(html_content: str) -> Dict:
             headings = doc.css(f'h{level}')
             for h in headings[:20]:
                 text = h.text(strip=True) if hasattr(h, 'text') else ''
+                h_attrs = h.attrs if hasattr(h, 'attrs') else {}
                 if text:
                     # HTML do heading
                     try:
@@ -694,6 +713,8 @@ def analyze_content_structure(html_content: str) -> Dict:
                     
                     results['headings'][f'h{level}'].append({
                         'text': text[:100],
+                        'heading_id': h_attrs.get('id', ''),
+                        'heading_class': h_attrs.get('class', ''),
                         'css_selector': f'h{level}',
                         'html_sample': html_sample
                     })
@@ -754,6 +775,8 @@ def analyze_content_structure(html_content: str) -> Dict:
                     
                     results['headings'][f'h{level}'].append({
                         'text': text[:100],
+                        'heading_id': h.get('id', ''),
+                        'heading_class': h.get('class', ''),
                         'css_selector': f'h{level}',
                         'xpath': get_xpath(h),
                         'html_sample': html_sample
@@ -807,12 +830,227 @@ def analyze_content_structure(html_content: str) -> Dict:
     return results
 
 # =============================================================================
+# FUNÇÃO DE PESQUISA APRIMORADA
+# =============================================================================
+
+def search_in_html_and_analysis(query: str, html_content: str, all_analysis: Dict) -> List[Dict]:
+    """
+    Pesquisa em todos os dados analisados e no HTML completo
+    """
+    if not query:
+        return []
+    
+    query_lower = query.lower()
+    results = []
+    added_items = set()  # Para evitar duplicatas
+    
+    # Primeiro pesquisa no HTML completo
+    if query_lower in html_content.lower():
+        # Encontra todas as ocorrências no HTML
+        lines = html_content.split('\n')
+        for i, line in enumerate(lines):
+            if query_lower in line.lower():
+                # Extrai contexto ao redor da linha
+                start_line = max(0, i - 1)
+                end_line = min(len(lines), i + 2)
+                context = '\n'.join(lines[start_line:end_line])
+                
+                # Tenta identificar o elemento HTML
+                match = re.search(r'<(\w+)[^>]*>', line)
+                tag = match.group(1) if match else 'unknown'
+                
+                # Adiciona apenas uma vez por contexto único
+                context_key = context[:100]
+                if context_key not in added_items:
+                    added_items.add(context_key)
+                    results.append({
+                        'category': f'HTML Direto - Tag <{tag}>',
+                        'type': 'html_direct',
+                        'selector': '',
+                        'xpath': '',
+                        'details': f"Linha {i+1}: {line[:100]}...",
+                        'html_preview': context[:300]
+                    })
+                    if len(results) >= 5:  # Limita resultados diretos do HTML
+                        break
+    
+    # Pesquisa em listas
+    lists_analysis = all_analysis.get('lists', {})
+    for list_type in ['navigation_menus', 'content_lists', 'galleries', 'other_lists']:
+        for lst in lists_analysis.get(list_type, []):
+            # Pesquisa em todos os campos da lista
+            if (query_lower in lst.get('css_selector', '').lower() or
+                query_lower in lst.get('parent_class', '').lower() or
+                query_lower in lst.get('parent_tag', '').lower() or
+                query_lower in lst.get('list_id', '').lower() or
+                query_lower in lst.get('list_class', '').lower() or
+                query_lower in lst.get('html_sample', '').lower()):
+                
+                result_key = f"lista_{lst.get('css_selector')}_{lst.get('parent_tag')}"
+                if result_key not in added_items:
+                    added_items.add(result_key)
+                    results.append({
+                        'category': f'Lista - {list_type.replace("_", " ").title()}',
+                        'type': 'lista',
+                        'selector': lst.get('css_selector', ''),
+                        'xpath': lst.get('xpath', ''),
+                        'details': f"{lst['total_items']} items, Container: <{lst['parent_tag']}>, ID: {lst.get('list_id', 'N/A')}, Class: {lst.get('list_class', 'N/A')}",
+                        'html_preview': lst.get('html_sample', '')[:300]
+                    })
+            
+            # Pesquisa nos items da lista
+            for idx, item in enumerate(lst.get('all_items', [])):
+                if query_lower in item.get('text', '').lower() or query_lower in item.get('html', '').lower():
+                    result_key = f"item_{lst.get('css_selector')}_{idx}"
+                    if result_key not in added_items:
+                        added_items.add(result_key)
+                        results.append({
+                            'category': f'Item de Lista - {list_type.replace("_", " ").title()}',
+                            'type': 'item_lista',
+                            'selector': f"{lst.get('css_selector', '')} li:nth-child({idx+1})",
+                            'xpath': f"{lst.get('xpath', '')}//li[{idx+1}]",
+                            'details': f"Item {idx+1}: {item['text'][:100]}",
+                            'html_preview': item.get('html', '')[:300]
+                        })
+    
+    # Pesquisa em formulários
+    forms_analysis = all_analysis.get('forms', {})
+    for form in forms_analysis.get('forms', []):
+        if (query_lower in form.get('id', '').lower() or
+            query_lower in form.get('class', '').lower() or
+            query_lower in form.get('name', '').lower() or
+            query_lower in form.get('action', '').lower() or
+            query_lower in form.get('html_sample', '').lower()):
+            
+            result_key = f"form_{form.get('id')}_{form.get('name')}"
+            if result_key not in added_items:
+                added_items.add(result_key)
+                results.append({
+                    'category': 'Formulário',
+                    'type': 'form',
+                    'selector': form.get('css_selector', ''),
+                    'xpath': form.get('xpath', ''),
+                    'details': f"ID: {form.get('id', 'N/A')}, Name: {form.get('name', 'N/A')}, Action: {form['action']}, Method: {form['method']}, {form['input_count']} inputs",
+                    'html_preview': form.get('html_sample', '')[:300]
+                })
+    
+    # Pesquisa em inputs standalone
+    for inp in forms_analysis.get('standalone_inputs', []):
+        if (query_lower in inp.get('id', '').lower() or
+            query_lower in inp.get('name', '').lower() or
+            query_lower in inp.get('placeholder', '').lower() or
+            query_lower in inp.get('type', '').lower() or
+            query_lower in inp.get('value', '').lower() or
+            query_lower in inp.get('html_sample', '').lower()):
+            
+            result_key = f"input_{inp.get('id')}_{inp.get('name')}"
+            if result_key not in added_items:
+                added_items.add(result_key)
+                results.append({
+                    'category': 'Input Standalone',
+                    'type': 'input',
+                    'selector': inp.get('css_selector', ''),
+                    'xpath': inp.get('xpath', ''),
+                    'details': f"Type: {inp['type']}, Name: {inp.get('name', 'N/A')}, ID: {inp.get('id', 'N/A')}, Placeholder: {inp.get('placeholder', 'N/A')}",
+                    'html_preview': inp.get('html_sample', '')[:300]
+                })
+    
+    # Pesquisa em links
+    nav_analysis = all_analysis.get('navigation', {})
+    for link_type in ['internal_links', 'external_links']:
+        for link in nav_analysis.get(link_type, []):
+            if (query_lower in link.get('text', '').lower() or
+                query_lower in link.get('href', '').lower() or
+                query_lower in link.get('link_id', '').lower() or
+                query_lower in link.get('link_class', '').lower() or
+                query_lower in link.get('html_sample', '').lower()):
+                
+                result_key = f"link_{link.get('href')}_{link.get('text')}"
+                if result_key not in added_items:
+                    added_items.add(result_key)
+                    results.append({
+                        'category': f'Link {link_type.replace("_", " ").title()}',
+                        'type': 'link',
+                        'selector': link.get('css_selector', ''),
+                        'xpath': link.get('xpath', ''),
+                        'details': f"Texto: {link['text']}, URL: {link['href'][:50]}, ID: {link.get('link_id', 'N/A')}, Class: {link.get('link_class', 'N/A')}",
+                        'html_preview': link.get('html_sample', '')[:300]
+                    })
+    
+    # Pesquisa em títulos
+    content_analysis = all_analysis.get('content', {})
+    for level, headings in content_analysis.get('headings', {}).items():
+        for heading in headings:
+            if (query_lower in heading.get('text', '').lower() or
+                query_lower in heading.get('heading_id', '').lower() or
+                query_lower in heading.get('heading_class', '').lower() or
+                query_lower in heading.get('html_sample', '').lower()):
+                
+                result_key = f"heading_{level}_{heading.get('text')}"
+                if result_key not in added_items:
+                    added_items.add(result_key)
+                    results.append({
+                        'category': f'Título {level.upper()}',
+                        'type': 'heading',
+                        'selector': heading.get('css_selector', ''),
+                        'xpath': heading.get('xpath', ''),
+                        'details': f"Texto: {heading['text']}, ID: {heading.get('heading_id', 'N/A')}, Class: {heading.get('heading_class', 'N/A')}",
+                        'html_preview': heading.get('html_sample', '')[:300]
+                    })
+    
+    # Pesquisa em blocos de conteúdo
+    for block in content_analysis.get('content_blocks', []):
+        if (query_lower in block.get('id', '').lower() or
+            query_lower in block.get('class', '').lower() or
+            query_lower in block.get('text_preview', '').lower()):
+            
+            result_key = f"block_{block.get('id')}_{block.get('tag')}"
+            if result_key not in added_items:
+                added_items.add(result_key)
+                results.append({
+                    'category': f'Bloco de Conteúdo <{block["tag"]}>',
+                    'type': 'content_block',
+                    'selector': block.get('css_selector', ''),
+                    'xpath': block.get('xpath', ''),
+                    'details': f"ID: {block['id']}, Class: {block['class']}, {block['text_length']} caracteres",
+                    'html_preview': block.get('text_preview', '')[:300]
+                })
+    
+    # Pesquisa em tabelas
+    for table in content_analysis.get('tables', []):
+        if (query_lower in table.get('id', '').lower() or
+            query_lower in table.get('class', '').lower() or
+            query_lower in table.get('html_sample', '').lower()):
+            
+            result_key = f"table_{table.get('id')}_{table.get('class')}"
+            if result_key not in added_items:
+                added_items.add(result_key)
+                results.append({
+                    'category': 'Tabela',
+                    'type': 'table',
+                    'selector': table.get('css_selector', ''),
+                    'xpath': table.get('xpath', ''),
+                    'details': f"{table['rows']} linhas x {table['cells']} células, ID: {table.get('id', 'N/A')}, Class: {table.get('class', 'N/A')}",
+                    'html_preview': table.get('html_sample', '')[:300]
+                })
+    
+    return results[:100]  # Limita a 100 resultados
+
+# =============================================================================
 # INTERFACE PRINCIPAL
 # =============================================================================
 
 def main():
     st.title("🔍 HTML Structure Analyzer")
     st.markdown("**Ferramenta para análise de estrutura HTML** - Facilita a criação de web crawlers identificando elementos importantes")
+    
+    # Inicializa session state
+    if 'html_content' not in st.session_state:
+        st.session_state.html_content = None
+    if 'all_analysis' not in st.session_state:
+        st.session_state.all_analysis = None
+    if 'final_url' not in st.session_state:
+        st.session_state.final_url = None
     
     # Sidebar
     with st.sidebar:
@@ -893,443 +1131,315 @@ def main():
                     nav_analysis = analyze_navigation(html_content, final_url)
                     content_analysis = analyze_content_structure(html_content)
                 
-                # Tabs para diferentes análises
-                tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                    "📋 Listas",
-                    "📝 Formulários",
-                    "🔗 Navegação",
-                    "📄 Conteúdo",
-                    "📊 Resumo"
+                # Armazenar todas as análises em session state
+                st.session_state.html_content = html_content
+                st.session_state.all_analysis = {
+                    'lists': lists_analysis,
+                    'forms': forms_analysis,
+                    'navigation': nav_analysis,
+                    'content': content_analysis
+                }
+                st.session_state.final_url = final_url
+                
+            except Exception as e:
+                st.error(f"❌ Erro ao analisar página: {str(e)}")
+                st.info("💡 Verifique se a URL está correta e acessível")
+                return
+    
+    # Se houver dados analisados, mostra a interface
+    if st.session_state.html_content and st.session_state.all_analysis:
+        
+        # =========================
+        # BARRA DE PESQUISA DINÂMICA
+        # =========================
+        st.markdown("---")
+        st.markdown("### 🔎 Pesquisa Rápida em Tempo Real")
+        
+        # Container para pesquisa
+        search_container = st.container()
+        
+        with search_container:
+            col1, col2 = st.columns([5, 1])
+            with col1:
+                search_query = st.text_input(
+                    "Pesquise por tags, classes, IDs, texto ou qualquer elemento:",
+                    placeholder="Ex: button, nav, form, login, menu, footer, class-name, #id-name, etc...",
+                    key="search_bar",
+                    label_visibility="collapsed"
+                )
+            with col2:
+                st.markdown(f"<div style='padding-top: 5px;'>📝 {len(st.session_state.html_content):,} caracteres HTML</div>", unsafe_allow_html=True)
+        
+        # Container para resultados da pesquisa
+        if search_query:
+            with st.container():
+                search_results = search_in_html_and_analysis(
+                    search_query, 
+                    st.session_state.html_content, 
+                    st.session_state.all_analysis
+                )
+                
+                if search_results:
+                    st.markdown(f"**🎯 Encontrados {len(search_results)} resultados para '{search_query}':**")
+                    
+                    # Agrupar resultados por categoria
+                    results_by_category = defaultdict(list)
+                    for result in search_results:
+                        results_by_category[result['category']].append(result)
+                    
+                    # Exibir resultados agrupados
+                    for category, items in results_by_category.items():
+                        with st.expander(f"{category} ({len(items)} resultados)", expanded=len(results_by_category) <= 3):
+                            for item in items[:10]:  # Limita a 10 por categoria
+                                col1, col2 = st.columns([1, 2])
+                                
+                                with col1:
+                                    st.markdown("**Seletores:**")
+                                    if item['selector']:
+                                        st.code(f"CSS: {item['selector']}", language='css')
+                                    if item.get('xpath'):
+                                        st.code(f"XPath: {item['xpath']}", language='xpath')
+                                
+                                with col2:
+                                    st.markdown("**Detalhes:**")
+                                    st.text(item['details'])
+                                    if item['html_preview']:
+                                        st.markdown("**Preview HTML:**")
+                                        st.code(item['html_preview'], language='html')
+                                
+                                st.markdown("---")
+                            
+                            if len(items) > 10:
+                                st.info(f"📊 Mostrando 10 de {len(items)} resultados nesta categoria")
+                else:
+                    st.warning(f"❌ Nenhum resultado encontrado para '{search_query}'")
+                    st.info("💡 Tente termos mais genéricos ou verifique a ortografia")
+        
+        st.markdown("---")
+        
+        # Tabs para diferentes análises
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "📋 Listas",
+            "📝 Formulários",
+            "🔗 Navegação",
+            "📄 Conteúdo",
+            "📊 Resumo",
+            "🔧 HTML Completo"
+        ])
+        
+        # [RESTANTE DAS TABS IGUAL AO CÓDIGO ANTERIOR ATÉ TAB5]
+        
+        # =========================
+        # TAB 1: LISTAS
+        # =========================
+        with tab1:
+            st.header("📋 Análise de Listas")
+            
+            lists_analysis = st.session_state.all_analysis['lists']
+            
+            # Estatísticas gerais
+            total_lists = sum([
+                len(lists_analysis['navigation_menus']),
+                len(lists_analysis['content_lists']),
+                len(lists_analysis['galleries']),
+                len(lists_analysis['other_lists'])
+            ])
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total de listas", total_lists)
+            with col2:
+                st.metric("Menus de navegação", len(lists_analysis['navigation_menus']))
+            with col3:
+                st.metric("Listas de conteúdo", len(lists_analysis['content_lists']))
+            with col4:
+                st.metric("Galerias", len(lists_analysis['galleries']))
+            
+            st.divider()
+            
+            # Menus de navegação detectados
+            if lists_analysis['navigation_menus']:
+                st.subheader("🧭 Menus de Navegação Detectados")
+                st.caption("Listas onde todos os items têm links e texto curto")
+                
+                for menu in lists_analysis['navigation_menus']:
+                    with st.expander(f"Menu com {menu['total_items']} items"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown("**Informações:**")
+                            st.text(f"Tipo: {menu['type']}")
+                            st.text(f"Container pai: <{menu['parent_tag']}>")
+                            if menu['parent_class']:
+                                st.text(f"Classe do pai: {menu['parent_class']}")
+                            st.text(f"Total de items: {menu['total_items']}")
+                            
+                            st.markdown("**Seletores:**")
+                            st.code(f"CSS: {menu['css_selector']}", language='css')
+                            st.code(f"XPath: {menu['xpath']}", language='xpath')
+                        
+                        with col2:
+                            st.markdown(f"**Todos os {len(menu['all_items'])} items do menu:**")
+                            for idx, item in enumerate(menu['all_items'], 1):
+                                if item['text']:
+                                    # Indica se tem link
+                                    link_indicator = "🔗" if item['has_link'] else ""
+                                    st.text(f"{idx}. {item['text'][:50]} {link_indicator}")
+                            
+                            if len(menu['all_items']) > 20:
+                                st.info(f"Menu extenso com {len(menu['all_items'])} items")
+                        
+                        st.markdown("**HTML Sample do menu:**")
+                        st.code(menu['html_sample'], language='html')
+        
+        # =========================
+        # TAB 2: FORMULÁRIOS
+        # =========================
+        with tab2:
+            st.header("📝 Análise de Formulários e Inputs")
+            
+            forms_analysis = st.session_state.all_analysis['forms']
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Total de forms", len(forms_analysis['forms']))
+            with col2:
+                st.metric("Inputs standalone", len(forms_analysis['standalone_inputs']))
+            
+            st.divider()
+            
+            # Formulários
+            if forms_analysis['forms']:
+                st.subheader("📋 Formulários Encontrados")
+                
+                for form in forms_analysis['forms']:
+                    with st.expander(f"Form: {form['name'] or form['id'] or 'Sem nome'} ({form['input_count']} inputs)"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown("**Propriedades:**")
+                            st.text(f"Action: {form['action'] or 'N/A'}")
+                            st.text(f"Method: {form['method']}")
+                            st.text(f"ID: {form['id'] or 'N/A'}")
+                            st.text(f"Class: {form['class'] or 'N/A'}")
+                        
+                        with col2:
+                            st.markdown("**Tipos de input:**")
+                            for inp_type, count in form['input_types'].items():
+                                st.text(f"{inp_type}: {count}")
+                        
+                        st.markdown("**Seletores:**")
+                        st.code(f"CSS: {form['css_selector']}", language='css')
+                        st.code(f"XPath: {form['xpath']}", language='xpath')
+                        
+                        st.markdown("**HTML Sample:**")
+                        st.code(form['html_sample'], language='html')
+        
+        # =========================
+        # TAB 3: NAVEGAÇÃO
+        # =========================
+        with tab3:
+            st.header("🔗 Análise de Links e Navegação")
+            
+            nav_analysis = st.session_state.all_analysis['navigation']
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Links internos", len(nav_analysis['internal_links']))
+            with col2:
+                st.metric("Links externos", len(nav_analysis['external_links']))
+            with col3:
+                st.metric("Padrões de nav", len(nav_analysis['navigation_patterns']))
+            
+            st.divider()
+            
+            # Padrões de navegação
+            if nav_analysis['navigation_patterns']:
+                st.subheader("🧭 Padrões de Navegação Detectados")
+                st.caption("Containers com múltiplos links agrupados")
+                
+                for tag, pattern in nav_analysis['navigation_patterns'].items():
+                    with st.expander(f"Container <{tag}> com {pattern['link_count']} links"):
+                        st.markdown("**Links de exemplo:**")
+                        for link in pattern['sample_links']:
+                            st.text(f"• {link['text']} → {link['href'][:50]}...")
+        
+        # =========================
+        # TAB 4: CONTEÚDO
+        # =========================
+        with tab4:
+            st.header("📄 Análise de Estrutura de Conteúdo")
+            
+            content_analysis = st.session_state.all_analysis['content']
+            
+            # Títulos
+            st.subheader("📌 Hierarquia de Títulos")
+            
+            for level, headings in content_analysis['headings'].items():
+                if headings:
+                    with st.expander(f"{level.upper()} - {len(headings)} encontrados"):
+                        for h in headings[:10]:
+                            st.text(f"• {h['text']}")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.code(f"CSS: {h['css_selector']}", language='css')
+                            with col2:
+                                if 'xpath' in h:
+                                    st.code(f"XPath: {h['xpath']}", language='xpath')
+        
+        # =========================
+        # TAB 5: RESUMO
+        # =========================
+        with tab5:
+            st.header("📊 Resumo da Análise")
+            
+            lists_analysis = st.session_state.all_analysis['lists']
+            forms_analysis = st.session_state.all_analysis['forms']
+            nav_analysis = st.session_state.all_analysis['navigation']
+            content_analysis = st.session_state.all_analysis['content']
+            
+            # Métricas gerais
+            st.subheader("📈 Estatísticas Gerais")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                total_lists = sum([
+                    len(lists_analysis['navigation_menus']),
+                    len(lists_analysis['content_lists']),
+                    len(lists_analysis['galleries']),
+                    len(lists_analysis['other_lists'])
                 ])
-                
-                # =========================
-                # TAB 1: LISTAS
-                # =========================
-                with tab1:
-                    st.header("📋 Análise de Listas")
-                    
-                    # Estatísticas gerais
-                    total_lists = sum([
-                        len(lists_analysis['navigation_menus']),
-                        len(lists_analysis['content_lists']),
-                        len(lists_analysis['galleries']),
-                        len(lists_analysis['other_lists'])
-                    ])
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Total de listas", total_lists)
-                    with col2:
-                        st.metric("Menus de navegação", len(lists_analysis['navigation_menus']))
-                    with col3:
-                        st.metric("Listas de conteúdo", len(lists_analysis['content_lists']))
-                    with col4:
-                        st.metric("Galerias", len(lists_analysis['galleries']))
-                    
-                    st.divider()
-                    
-                    # Menus de navegação detectados
-                    if lists_analysis['navigation_menus']:
-                        st.subheader("🧭 Menus de Navegação Detectados")
-                        st.caption("Listas onde todos os items têm links e texto curto")
-                        
-                        for menu in lists_analysis['navigation_menus']:
-                            with st.expander(f"Menu com {menu['total_items']} items"):
-                                col1, col2 = st.columns(2)
-                                
-                                with col1:
-                                    st.markdown("**Informações:**")
-                                    st.text(f"Tipo: {menu['type']}")
-                                    st.text(f"Container pai: <{menu['parent_tag']}>")
-                                    if menu['parent_class']:
-                                        st.text(f"Classe do pai: {menu['parent_class']}")
-                                    st.text(f"Total de items: {menu['total_items']}")
-                                    
-                                    st.markdown("**Seletores:**")
-                                    st.code(f"CSS: {menu['css_selector']}", language='css')
-                                    st.code(f"XPath: {menu['xpath']}", language='xpath')
-                                
-                                with col2:
-                                    st.markdown(f"**Todos os {len(menu['all_items'])} items do menu:**")
-                                    for idx, item in enumerate(menu['all_items'], 1):
-                                        if item['text']:
-                                            # Indica se tem link
-                                            link_indicator = "🔗" if item['has_link'] else ""
-                                            st.text(f"{idx}. {item['text'][:50]} {link_indicator}")
-                                    
-                                    if len(menu['all_items']) > 20:
-                                        st.info(f"Menu extenso com {len(menu['all_items'])} items")
-                                
-                                st.markdown("**HTML Sample do menu:**")
-                                st.code(menu['html_sample'], language='html')
-                                
-                                # Mostra HTML de um item como exemplo
-                                if menu['all_items'] and menu['all_items'][0].get('html'):
-                                    st.markdown("**HTML de um item de exemplo:**")
-                                    st.code(menu['all_items'][0]['html'], language='html')
-                    
-                    # Listas de conteúdo
-                    if lists_analysis['content_lists']:
-                        st.subheader("📚 Listas de Conteúdo")
-                        st.caption("Listas com texto longo, geralmente artigos ou posts")
-                        
-                        for lst in lists_analysis['content_lists']:
-                            with st.expander(f"Lista com {lst['total_items']} items (média {lst['avg_text_length']:.0f} chars)"):
-                                col1, col2 = st.columns([1, 2])
-                                
-                                with col1:
-                                    st.markdown("**Seletores:**")
-                                    st.code(f"CSS: {lst['css_selector']}", language='css')
-                                    st.code(f"XPath: {lst['xpath']}", language='xpath')
-                                    
-                                    st.markdown("**Características:**")
-                                    st.text(f"Total de items: {lst['total_items']}")
-                                    st.text(f"Items com links: {lst['items_with_links']}")
-                                    st.text(f"Items com imagens: {lst['items_with_images']}")
-                                    st.text(f"Container pai: <{lst['parent_tag']}>")
-                                    if lst['parent_class']:
-                                        st.text(f"Classe do pai: {lst['parent_class']}")
-                                
-                                with col2:
-                                    st.markdown(f"**Todos os {len(lst['all_items'])} items detectados:**")
-                                    
-                                    # Mostra TODOS os items
-                                    for idx, item in enumerate(lst['all_items'], 1):
-                                        # Cria um indicador visual do que o item contém
-                                        indicators = []
-                                        if item['has_link']:
-                                            indicators.append("🔗")
-                                        if item['has_image']:
-                                            indicators.append("🖼️")
-                                        
-                                        indicator_str = " ".join(indicators)
-                                        
-                                        # Mostra o texto do item
-                                        if item['text']:
-                                            # Trunca textos muito longos para não poluir a interface
-                                            display_text = item['text'][:200] + "..." if len(item['text']) > 200 else item['text']
-                                            st.text(f"{idx}. {display_text} {indicator_str}")
-                                        else:
-                                            st.text(f"{idx}. [Sem texto] {indicator_str}")
-                                    
-                                    # Se houver muitos items, adiciona nota
-                                    if len(lst['all_items']) > 20:
-                                        st.info(f"📊 Lista grande com {len(lst['all_items'])} items totais")
-                                
-                                st.markdown("**HTML Sample da lista:**")
-                                st.code(lst['html_sample'], language='html')
-                                
-                                # Mostra HTML de alguns items como exemplo
-                                if lst['all_items'] and lst['all_items'][0].get('html'):
-                                    st.markdown("**HTML do primeiro item:**")
-                                    st.code(lst['all_items'][0]['html'], language='html')
-                    
-                    # Galerias
-                    if lists_analysis['galleries']:
-                        st.subheader("🖼️ Galerias")
-                        st.caption("Listas com predominância de imagens")
-                        
-                        for gal in lists_analysis['galleries']:
-                            with st.expander(f"Galeria com {gal['total_items']} items ({gal['items_with_images']} com imagens)"):
-                                col1, col2 = st.columns([1, 2])
-                                
-                                with col1:
-                                    st.markdown("**Seletores:**")
-                                    st.code(f"CSS: {gal['css_selector']}", language='css')
-                                    st.code(f"XPath: {gal['xpath']}", language='xpath')
-                                    
-                                    st.markdown("**Estatísticas:**")
-                                    st.text(f"Total de items: {gal['total_items']}")
-                                    st.text(f"Com imagens: {gal['items_with_images']}")
-                                    st.text(f"Com links: {gal['items_with_links']}")
-                                    st.text(f"Container: <{gal['parent_tag']}>")
-                                
-                                with col2:
-                                    st.markdown(f"**Todos os {len(gal['all_items'])} items da galeria:**")
-                                    
-                                    for idx, item in enumerate(gal['all_items'], 1):
-                                        indicators = []
-                                        if item['has_image']:
-                                            indicators.append("🖼️")
-                                        if item['has_link']:
-                                            indicators.append("🔗")
-                                        
-                                        indicator_str = " ".join(indicators)
-                                        
-                                        if item['text']:
-                                            display_text = item['text'][:100] + "..." if len(item['text']) > 100 else item['text']
-                                            st.text(f"{idx}. {display_text} {indicator_str}")
-                                        else:
-                                            st.text(f"{idx}. [Item visual] {indicator_str}")
-                                
-                                st.markdown("**HTML Sample:**")
-                                st.code(gal['html_sample'], language='html')
-                    
-                    # Outras listas
-                    if lists_analysis['other_lists']:
-                        st.subheader("📝 Outras Listas")
-                        st.caption("Listas que não se encaixam nas categorias anteriores")
-                        
-                        for lst in lists_analysis['other_lists']:
-                            with st.expander(f"Lista {lst['type']} com {lst['total_items']} items"):
-                                st.markdown("**Seletores:**")
-                                st.code(f"CSS: {lst['css_selector']}", language='css')
-                                st.code(f"XPath: {lst['xpath']}", language='xpath')
-                                
-                                st.markdown("**Características:**")
-                                st.text(f"Container pai: <{lst['parent_tag']}>")
-                                st.text(f"Média de texto: {lst['avg_text_length']:.0f} chars")
-                                st.text(f"Items com links: {lst['items_with_links']}")
-                                st.text(f"Items com imagens: {lst['items_with_images']}")
-                                
-                                # Mostra alguns items
-                                if lst['all_items']:
-                                    st.markdown("**Primeiros items:**")
-                                    for idx, item in enumerate(lst['all_items'][:10], 1):
-                                        if item['text']:
-                                            display_text = item['text'][:150] + "..." if len(item['text']) > 150 else item['text']
-                                            st.text(f"{idx}. {display_text}")
-                                
-                                st.markdown("**HTML Sample:**")
-                                st.code(lst['html_sample'], language='html')
-                
-                # =========================
-                # TAB 2: FORMULÁRIOS
-                # =========================
-                with tab2:
-                    st.header("📝 Análise de Formulários e Inputs")
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Total de forms", len(forms_analysis['forms']))
-                    with col2:
-                        st.metric("Inputs standalone", len(forms_analysis['standalone_inputs']))
-                    
-                    st.divider()
-                    
-                    # Formulários
-                    if forms_analysis['forms']:
-                        st.subheader("📋 Formulários Encontrados")
-                        
-                        for form in forms_analysis['forms']:
-                            with st.expander(f"Form: {form['name'] or form['id'] or 'Sem nome'} ({form['input_count']} inputs)"):
-                                col1, col2 = st.columns(2)
-                                
-                                with col1:
-                                    st.markdown("**Propriedades:**")
-                                    st.text(f"Action: {form['action'] or 'N/A'}")
-                                    st.text(f"Method: {form['method']}")
-                                    st.text(f"ID: {form['id'] or 'N/A'}")
-                                    st.text(f"Class: {form['class'] or 'N/A'}")
-                                
-                                with col2:
-                                    st.markdown("**Tipos de input:**")
-                                    for inp_type, count in form['input_types'].items():
-                                        st.text(f"{inp_type}: {count}")
-                                
-                                st.markdown("**Seletores:**")
-                                st.code(f"CSS: {form['css_selector']}", language='css')
-                                st.code(f"XPath: {form['xpath']}", language='xpath')
-                                
-                                st.markdown("**HTML Sample:**")
-                                st.code(form['html_sample'], language='html')
-                    
-                    # Inputs standalone
-                    if forms_analysis['standalone_inputs']:
-                        st.subheader("🔤 Inputs Fora de Formulários")
-                        
-                        for inp in forms_analysis['standalone_inputs'][:10]:
-                            with st.expander(f"{inp['tag']} - {inp['name'] or inp['id'] or 'Sem identificação'}"):
-                                st.text(f"Type: {inp['type']}")
-                                st.text(f"Placeholder: {inp['placeholder'] or 'N/A'}")
-                                st.code(f"CSS: {inp['css_selector']}", language='css')
-                                st.code(f"XPath: {inp['xpath']}", language='xpath')
-                                st.code(inp['html_sample'], language='html')
-                
-                # =========================
-                # TAB 3: NAVEGAÇÃO
-                # =========================
-                with tab3:
-                    st.header("🔗 Análise de Links e Navegação")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Links internos", len(nav_analysis['internal_links']))
-                    with col2:
-                        st.metric("Links externos", len(nav_analysis['external_links']))
-                    with col3:
-                        st.metric("Padrões de nav", len(nav_analysis['navigation_patterns']))
-                    
-                    st.divider()
-                    
-                    # Padrões de navegação
-                    if nav_analysis['navigation_patterns']:
-                        st.subheader("🧭 Padrões de Navegação Detectados")
-                        st.caption("Containers com múltiplos links agrupados")
-                        
-                        for tag, pattern in nav_analysis['navigation_patterns'].items():
-                            with st.expander(f"Container <{tag}> com {pattern['link_count']} links"):
-                                st.markdown("**Links de exemplo:**")
-                                for link in pattern['sample_links']:
-                                    st.text(f"• {link['text']} → {link['href'][:50]}...")
-                    
-                    # Sample de links
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.subheader("🏠 Links Internos")
-                        for link in nav_analysis['internal_links'][:10]:
-                            with st.expander(link['text'] or link['href'][:30]):
-                                st.text(f"Href: {link['href']}")
-                                st.text(f"Parent: <{link['parent_tag']}>")
-                                st.code(f"CSS: {link['css_selector']}", language='css')
-                                if 'xpath' in link:
-                                    st.code(f"XPath: {link['xpath']}", language='xpath')
-                                st.code(link['html_sample'], language='html')
-                    
-                    with col2:
-                        st.subheader("🌐 Links Externos")
-                        for link in nav_analysis['external_links'][:10]:
-                            with st.expander(link['text'] or link['href'][:30]):
-                                st.text(f"Href: {link['href']}")
-                                st.text(f"Parent: <{link['parent_tag']}>")
-                                st.code(f"CSS: {link['css_selector']}", language='css')
-                                if 'xpath' in link:
-                                    st.code(f"XPath: {link['xpath']}", language='xpath')
-                                st.code(link['html_sample'], language='html')
-                
-                # =========================
-                # TAB 4: CONTEÚDO
-                # =========================
-                with tab4:
-                    st.header("📄 Análise de Estrutura de Conteúdo")
-                    
-                    # Títulos
-                    st.subheader("📌 Hierarquia de Títulos")
-                    
-                    for level, headings in content_analysis['headings'].items():
-                        if headings:
-                            with st.expander(f"{level.upper()} - {len(headings)} encontrados"):
-                                for h in headings[:10]:
-                                    st.text(f"• {h['text']}")
-                                    col1, col2 = st.columns(2)
-                                    with col1:
-                                        st.code(f"CSS: {h['css_selector']}", language='css')
-                                    with col2:
-                                        if 'xpath' in h:
-                                            st.code(f"XPath: {h['xpath']}", language='xpath')
-                    
-                    # Blocos de conteúdo
-                    if content_analysis['content_blocks']:
-                        st.subheader("📦 Blocos de Conteúdo Principal")
-                        st.caption("Divs e sections com texto substancial")
-                        
-                        for block in content_analysis['content_blocks'][:10]:
-                            with st.expander(f"<{block['tag']}> - {block['text_length']} caracteres"):
-                                st.text(f"ID: {block['id'] or 'N/A'}")
-                                st.text(f"Class: {block['class'] or 'N/A'}")
-                                st.markdown("**Preview do texto:**")
-                                st.text(block['text_preview'])
-                                st.code(f"CSS: {block['css_selector']}", language='css')
-                                if 'xpath' in block:
-                                    st.code(f"XPath: {block['xpath']}", language='xpath')
-                    
-                    # Tabelas
-                    if content_analysis['tables']:
-                        st.subheader("📊 Tabelas")
-                        
-                        for table in content_analysis['tables']:
-                            with st.expander(f"Tabela: {table['rows']} linhas x {table['cells']} células"):
-                                st.text(f"ID: {table['id'] or 'N/A'}")
-                                st.text(f"Class: {table['class'] or 'N/A'}")
-                                st.code(f"CSS: {table['css_selector']}", language='css')
-                                if 'xpath' in table:
-                                    st.code(f"XPath: {table['xpath']}", language='xpath')
-                                st.code(table['html_sample'], language='html')
-                
-                # =========================
-                # TAB 5: RESUMO
-                # =========================
-                with tab5:
-                    st.header("📊 Resumo da Análise")
-                    
-                    # Métricas gerais
-                    st.subheader("📈 Estatísticas Gerais")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        total_lists = sum([
-                            len(lists_analysis['navigation_menus']),
-                            len(lists_analysis['content_lists']),
-                            len(lists_analysis['galleries']),
-                            len(lists_analysis['other_lists'])
-                        ])
-                        st.metric("Listas", total_lists)
-                    
-                    with col2:
-                        st.metric("Formulários", len(forms_analysis['forms']))
-                    
-                    with col3:
-                        total_links = len(nav_analysis['internal_links']) + len(nav_analysis['external_links'])
-                        st.metric("Links", total_links)
-                    
-                    with col4:
-                        total_headings = sum(len(h) for h in content_analysis['headings'].values())
-                        st.metric("Títulos", total_headings)
-                    
-                    st.divider()
-                    
-                    # Sugestões para crawler
-                    st.subheader("💡 Sugestões para Criar um Crawler")
-                    
-                    suggestions = []
-                    
-                    # Baseado em menus de navegação
-                    if lists_analysis['navigation_menus']:
-                        menu = lists_analysis['navigation_menus'][0]
-                        suggestions.append(f"**Menu de navegação principal:** Use o seletor `{menu['css_selector']}` para extrair links de navegação")
-                    
-                    # Baseado em listas de conteúdo
-                    if lists_analysis['content_lists']:
-                        lst = lists_analysis['content_lists'][0]
-                        suggestions.append(f"**Lista de conteúdo:** Use `{lst['css_selector']}` para extrair items de conteúdo (artigos/posts)")
-                    
-                    # Baseado em formulários
-                    if forms_analysis['forms']:
-                        suggestions.append(f"**Formulários detectados:** {len(forms_analysis['forms'])} formulários encontrados para possível automação")
-                    
-                    # Baseado em tabelas
-                    if content_analysis['tables']:
-                        suggestions.append(f"**Dados tabulares:** {len(content_analysis['tables'])} tabelas encontradas para extração estruturada")
-                    
-                    # Baseado em padrões de navegação
-                    if nav_analysis['navigation_patterns']:
-                        suggestions.append(f"**Padrões de navegação:** {len(nav_analysis['navigation_patterns'])} containers com agrupamento de links")
-                    
-                    if suggestions:
-                        for suggestion in suggestions:
-                            st.info(suggestion)
-                    else:
-                        st.warning("Não foram encontrados padrões claros para sugerir")
-                    
-                    st.divider()
-                    
-                    # Código de exemplo
-                    st.subheader("🔨 Código de Exemplo para Crawler")
-                    
-                    code_example = f"""
+                st.metric("Listas", total_lists)
+            
+            with col2:
+                st.metric("Formulários", len(forms_analysis['forms']))
+            
+            with col3:
+                total_links = len(nav_analysis['internal_links']) + len(nav_analysis['external_links'])
+                st.metric("Links", total_links)
+            
+            with col4:
+                total_headings = sum(len(h) for h in content_analysis['headings'].values())
+                st.metric("Títulos", total_headings)
+            
+            st.divider()
+            
+            # Código de exemplo
+            st.subheader("🔨 Código de Exemplo para Crawler")
+            
+            code_example = f"""
 # Exemplo de código para extrair dados desta página
 import requests
 from lxml import html
 
-url = "{url}"
+url = "{st.session_state.final_url}"
 response = requests.get(url)
 doc = html.fromstring(response.content)
 """
-                    
-                    if lists_analysis['navigation_menus']:
-                        code_example += f"""
+            
+            if lists_analysis['navigation_menus']:
+                code_example += f"""
 # Extrair menu de navegação
 menu_items = doc.xpath('{lists_analysis['navigation_menus'][0]['xpath']}//li')
 for item in menu_items:
@@ -1337,21 +1447,61 @@ for item in menu_items:
     text = item.xpath('.//a/text()')
     print(f"{{text}}: {{link}}")
 """
-                    
-                    if lists_analysis['content_lists']:
-                        code_example += f"""
-# Extrair lista de conteúdo
-content_items = doc.xpath('{lists_analysis['content_lists'][0]['xpath']}//li')
-for item in content_items:
-    # Processar cada item
-    pass
-"""
-                    
-                    st.code(code_example, language='python')
+            
+            st.code(code_example, language='python')
+        
+        # =========================
+        # TAB 6: HTML COMPLETO
+        # =========================
+        with tab6:
+            st.header("🔧 HTML Completo da Página")
+            
+            st.markdown(f"**Tamanho do HTML:** {len(st.session_state.html_content):,} caracteres")
+            
+            # Opções de visualização
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                show_formatted = st.checkbox("Formatado", value=True)
+            with col2:
+                show_line_numbers = st.checkbox("Números de linha", value=True)
+            with col3:
+                max_height = st.selectbox("Altura máxima", [300, 500, 700, 1000], index=1)
+            
+            # Exibir HTML
+            if show_formatted:
+                # Tenta formatar o HTML
+                try:
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(st.session_state.html_content, 'html.parser')
+                    formatted_html = soup.prettify()
+                except:
+                    formatted_html = st.session_state.html_content
                 
-            except Exception as e:
-                st.error(f"❌ Erro ao analisar página: {str(e)}")
-                st.info("💡 Verifique se a URL está correta e acessível")
+                if show_line_numbers:
+                    lines = formatted_html.split('\n')
+                    numbered_html = '\n'.join([f"{i+1:4d}: {line}" for i, line in enumerate(lines)])
+                    st.code(numbered_html, language='html', line_numbers=False)
+                else:
+                    st.code(formatted_html, language='html')
+            else:
+                if show_line_numbers:
+                    lines = st.session_state.html_content.split('\n')
+                    numbered_html = '\n'.join([f"{i+1:4d}: {line}" for i, line in enumerate(lines)])
+                    st.text_area("HTML Source", numbered_html, height=max_height)
+                else:
+                    st.text_area("HTML Source", st.session_state.html_content, height=max_height)
+            
+            # Botão para copiar
+            st.download_button(
+                label="📥 Baixar HTML",
+                data=st.session_state.html_content,
+                file_name=f"html_source_{st.session_state.final_url.replace('https://', '').replace('http://', '').replace('/', '_')[:50]}.html",
+                mime="text/html"
+            )
+    
+    # Se não há dados analisados ainda
+    elif not st.session_state.html_content:
+        st.info("👆 Configure e clique em 'Analisar Estrutura' para começar")
 
 if __name__ == "__main__":
     main()
