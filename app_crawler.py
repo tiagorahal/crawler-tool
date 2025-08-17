@@ -47,11 +47,15 @@ if not USE_SELECTOLAX:
     try:
         from lxml import html as lxml_html
         import lxml
+        try:
+            from cssselect import GenericTranslator
+        except ImportError:
+            pass  # CSS selector support optional
     except ImportError:
         st.error("❌ Nenhum parser HTML disponível. Instale selectolax ou lxml:")
         st.code("pip install selectolax")
         st.code("# OU")
-        st.code("pip install lxml")
+        st.code("pip install lxml cssselect")
         st.stop()
 
 # Driver para renderização
@@ -830,6 +834,661 @@ def analyze_content_structure(html_content: str) -> Dict:
     return results
 
 # =============================================================================
+# FUNÇÃO DE TESTE DE SELETORES
+# =============================================================================
+
+def test_selector(html_content: str, selector_input: str, selector_type: str, action: str, value: str = "", url: str = "") -> Tuple[List[Dict], str]:
+    """
+    Testa um seletor no HTML e retorna os resultados e código Python
+    """
+    doc = parse_html(html_content)
+    results = []
+    code_samples = []
+    actual_selector = selector_input  # Seletor real usado para o código
+    actual_selector_type = selector_type  # Tipo real do seletor
+    final_url = url or "https://exemplo.com"  # URL real ou placeholder
+    
+    try:
+        # Determina o tipo de seletor e encontra elementos
+        if selector_type == "XPath":
+            if USE_SELECTOLAX:
+                st.warning("XPath completo não disponível com Selectolax. Use lxml para melhor suporte.")
+                elements = []
+            else:
+                elements = doc.xpath(selector_input)
+        
+        elif selector_type == "CSS":
+            if USE_SELECTOLAX:
+                elements = doc.css(selector_input)
+            else:
+                # Converte CSS para XPath no lxml
+                try:
+                    from cssselect import GenericTranslator
+                    translator = GenericTranslator()
+                    xpath = translator.css_to_xpath(selector_input)
+                    elements = doc.xpath(xpath)
+                except ImportError:
+                    st.error("Para usar CSS selectors com lxml, instale: pip install cssselect")
+                    elements = []
+        
+        elif selector_type == "HTML":
+            # Se o input é HTML, tenta extrair seletor dele
+            temp_doc = parse_html(selector_input)
+            # Tenta identificar ID ou classe do elemento principal
+            if USE_SELECTOLAX:
+                root = temp_doc.css_first('*')
+                if root and hasattr(root, 'attrs'):
+                    attrs = root.attrs
+                    if attrs.get('id'):
+                        actual_selector = f"#{attrs['id']}"
+                        actual_selector_type = "CSS"
+                        elements = doc.css(actual_selector)
+                    elif attrs.get('class'):
+                        class_name = attrs['class'].split()[0]
+                        actual_selector = f".{class_name}"
+                        actual_selector_type = "CSS"
+                        elements = doc.css(actual_selector)
+                    else:
+                        actual_selector = root.tag
+                        actual_selector_type = "CSS"
+                        elements = doc.css(actual_selector)
+            else:
+                # Para lxml, pega o primeiro elemento
+                if hasattr(temp_doc, 'tag'):
+                    elem_id = temp_doc.get('id')
+                    elem_class = temp_doc.get('class')
+                    if elem_id:
+                        actual_selector = f"//*[@id='{elem_id}']"
+                        actual_selector_type = "XPath"
+                        elements = doc.xpath(actual_selector)
+                    elif elem_class:
+                        actual_selector = f"//*[@class='{elem_class}']"
+                        actual_selector_type = "XPath"
+                        elements = doc.xpath(actual_selector)
+                    else:
+                        actual_selector = f"//{temp_doc.tag}"
+                        actual_selector_type = "XPath"
+                        elements = doc.xpath(actual_selector)
+                else:
+                    # Tenta processar como lista de elementos
+                    for elem in temp_doc:
+                        if hasattr(elem, 'tag'):
+                            elem_id = elem.get('id')
+                            elem_class = elem.get('class')
+                            if elem_id:
+                                actual_selector = f"//*[@id='{elem_id}']"
+                                actual_selector_type = "XPath"
+                                elements = doc.xpath(actual_selector)
+                                break
+                            elif elem_class:
+                                actual_selector = f"//*[@class='{elem_class}']"
+                                actual_selector_type = "XPath"
+                                elements = doc.xpath(actual_selector)
+                                break
+        
+        # Processa elementos encontrados
+        for i, elem in enumerate(elements[:50]):  # Aumenta limite para 50 resultados
+            elem_info = {'index': i + 1}
+            
+            if USE_SELECTOLAX:
+                # Para selectolax
+                elem_info['tag'] = elem.tag if hasattr(elem, 'tag') else 'unknown'
+                elem_info['text'] = elem.text(strip=True) if hasattr(elem, 'text') else ''
+                attrs = elem.attrs if hasattr(elem, 'attrs') else {}
+                elem_info['id'] = attrs.get('id', '')
+                elem_info['class'] = attrs.get('class', '')
+                elem_info['href'] = attrs.get('href', '')
+                elem_info['value'] = attrs.get('value', '')
+                elem_info['type'] = attrs.get('type', '')
+                
+                # HTML do elemento
+                try:
+                    elem_info['html'] = elem.html if hasattr(elem, 'html') else ''
+                    if len(elem_info['html']) > 300:
+                        elem_info['html'] = elem_info['html'][:300] + '...'
+                except:
+                    elem_info['html'] = ''
+            else:
+                # Para lxml
+                elem_info['tag'] = elem.tag if hasattr(elem, 'tag') else 'unknown'
+                elem_info['text'] = elem.text_content().strip() if hasattr(elem, 'text_content') else ''
+                elem_info['id'] = elem.get('id', '')
+                elem_info['class'] = elem.get('class', '')
+                elem_info['href'] = elem.get('href', '')
+                elem_info['value'] = elem.get('value', '')
+                elem_info['type'] = elem.get('type', '')
+                
+                # HTML do elemento
+                try:
+                    from lxml import html as lxml_html
+                    elem_info['html'] = lxml_html.tostring(elem, encoding='unicode', method='html')
+                    if len(elem_info['html']) > 300:
+                        elem_info['html'] = elem_info['html'][:300] + '...'
+                except:
+                    elem_info['html'] = ''
+            
+            results.append(elem_info)
+        
+        # Gera código Python baseado na ação - USANDO actual_selector e actual_selector_type
+        if results:
+            if action == "Extrair Texto":
+                if actual_selector_type == "XPath":
+                    code_samples.append(f"""# Extrair texto usando XPath
+from lxml import html
+import requests
+
+url = "{final_url}"
+response = requests.get(url)
+doc = html.fromstring(response.content)
+
+# Encontra elementos
+elements = doc.xpath('{actual_selector}')
+print(f"Encontrados {{len(elements)}} elementos")
+
+# Extrai texto de cada elemento
+for i, elem in enumerate(elements, 1):
+    text = elem.text_content().strip() if hasattr(elem, 'text_content') else ''
+    print(f"Elemento {{i}}: {{text}}")
+""")
+                elif actual_selector_type == "CSS":
+                    code_samples.append(f"""# Extrair texto usando CSS Selector
+from bs4 import BeautifulSoup
+import requests
+
+url = "{final_url}"
+response = requests.get(url)
+soup = BeautifulSoup(response.content, 'html.parser')
+
+# Encontra elementos
+elements = soup.select('{actual_selector}')
+print(f"Encontrados {{len(elements)}} elementos")
+
+# Extrai texto de cada elemento
+for i, elem in enumerate(elements, 1):
+    text = elem.get_text(strip=True)
+    print(f"Elemento {{i}}: {{text}}")
+""")
+            
+            elif action == "Extrair Atributo":
+                attr_name = value or 'href'
+                if actual_selector_type == "XPath":
+                    code_samples.append(f"""# Extrair atributo usando XPath
+from lxml import html
+import requests
+
+url = "{final_url}"
+response = requests.get(url)
+doc = html.fromstring(response.content)
+
+# Encontra elementos e extrai atributo
+elements = doc.xpath('{actual_selector}')
+print(f"Encontrados {{len(elements)}} elementos")
+
+for i, elem in enumerate(elements, 1):
+    attr_value = elem.get('{attr_name}', '')
+    if attr_value:
+        print(f"Elemento {{i}} - {attr_name}: {{attr_value}}")
+""")
+                elif actual_selector_type == "CSS":
+                    code_samples.append(f"""# Extrair atributo usando CSS Selector
+from bs4 import BeautifulSoup
+import requests
+
+url = "{final_url}"
+response = requests.get(url)
+soup = BeautifulSoup(response.content, 'html.parser')
+
+# Encontra elementos
+elements = soup.select('{actual_selector}')
+print(f"Encontrados {{len(elements)}} elementos")
+
+for i, elem in enumerate(elements, 1):
+    attr_value = elem.get('{attr_name}', '')
+    if attr_value:
+        print(f"Elemento {{i}} - {attr_name}: {{attr_value}}")
+""")
+            
+            elif action == "Clicar (Selenium)":
+                code_samples.append(f"""# Clicar em elemento usando Selenium
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+driver = webdriver.Chrome()
+driver.get("{final_url}")
+
+# Aguarda e encontra todos os elementos
+elements = WebDriverWait(driver, 10).until(
+    EC.presence_of_all_elements_located((By.{'XPATH' if actual_selector_type == 'XPath' else 'CSS_SELECTOR'}, '{actual_selector}'))
+)
+print(f"Encontrados {{len(elements)}} elementos")
+
+# Clica no primeiro elemento (ou escolha o índice desejado)
+if elements:
+    elements[0].click()  # Mude o índice conforme necessário
+    print("Elemento clicado com sucesso!")
+
+# Continue com suas ações...
+driver.quit()
+""")
+            
+            elif action == "Clicar (Playwright)":
+                code_samples.append(f"""# Clicar em elemento usando Playwright
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    page = browser.new_page()
+    page.goto("{final_url}")
+    
+    # Conta elementos encontrados
+    elements = page.locator('{actual_selector}')
+    count = elements.count()
+    print(f"Encontrados {{count}} elementos")
+    
+    # Clica no primeiro elemento (ou use .nth(index) para outro)
+    if count > 0:
+        elements.first.click()  # Ou use .nth(0) para o primeiro
+        print("Elemento clicado com sucesso!")
+    
+    # Continue com suas ações...
+    browser.close()
+""")
+            
+            elif action == "Preencher Input":
+                input_value = value or 'SEU_TEXTO_AQUI'
+                code_samples.append(f"""# Preencher input usando Selenium
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+driver = webdriver.Chrome()
+driver.get("{final_url}")
+
+# Encontra todos os inputs
+inputs = WebDriverWait(driver, 10).until(
+    EC.presence_of_all_elements_located((By.{'XPATH' if actual_selector_type == 'XPath' else 'CSS_SELECTOR'}, '{actual_selector}'))
+)
+print(f"Encontrados {{len(inputs)}} inputs")
+
+# Preenche o primeiro input (ou escolha o índice desejado)
+if inputs:
+    inputs[0].clear()
+    inputs[0].send_keys('{input_value}')
+    print("Input preenchido com sucesso!")
+
+# Continue com suas ações...
+driver.quit()
+""")
+                
+                code_samples.append(f"""# Preencher input usando Playwright
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    page = browser.new_page()
+    page.goto("{final_url}")
+    
+    # Preenche o input
+    inputs = page.locator('{actual_selector}')
+    count = inputs.count()
+    print(f"Encontrados {{count}} inputs")
+    
+    if count > 0:
+        inputs.first.fill('{input_value}')  # Ou use .nth(index)
+        print("Input preenchido com sucesso!")
+    
+    # Continue com suas ações...
+    browser.close()
+""")
+            
+            elif action == "Submeter Form":
+                code_samples.append(f"""# Submeter formulário
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+
+driver = webdriver.Chrome()
+driver.get("{final_url}")
+
+# Encontra e submete o formulário
+forms = driver.find_elements(By.{'XPATH' if actual_selector_type == 'XPath' else 'CSS_SELECTOR'}, '{actual_selector}')
+print(f"Encontrados {{len(forms)}} formulários")
+
+if forms:
+    forms[0].submit()  # Submete o primeiro formulário
+    print("Formulário submetido com sucesso!")
+
+driver.quit()
+""")
+            
+            # Adiciona informação sobre o seletor usado
+            if selector_type == "HTML":
+                code_samples.insert(0, f"""# Seletor extraído do HTML fornecido:
+# Tipo: {actual_selector_type}
+# Seletor: {actual_selector}
+# Total de elementos encontrados: {len(results)}
+""")
+        
+        # Junta todos os códigos
+        final_code = "\n\n# " + "="*60 + "\n\n".join(code_samples) if code_samples else "# Nenhum elemento encontrado"
+        
+    except Exception as e:
+        results = []
+        final_code = f"# Erro ao processar seletor: {str(e)}"
+    
+    return results, final_code
+    """
+    Testa um seletor no HTML e retorna os resultados e código Python
+    """
+    doc = parse_html(html_content)
+    results = []
+    code_samples = []
+    actual_selector = selector_input  # Seletor real usado para o código
+    actual_selector_type = selector_type  # Tipo real do seletor
+    
+    try:
+        # Determina o tipo de seletor e encontra elementos
+        if selector_type == "XPath":
+            if USE_SELECTOLAX:
+                st.warning("XPath completo não disponível com Selectolax. Use lxml para melhor suporte.")
+                elements = []
+            else:
+                elements = doc.xpath(selector_input)
+        
+        elif selector_type == "CSS":
+            if USE_SELECTOLAX:
+                elements = doc.css(selector_input)
+            else:
+                # Converte CSS para XPath no lxml
+                try:
+                    from cssselect import GenericTranslator
+                    translator = GenericTranslator()
+                    xpath = translator.css_to_xpath(selector_input)
+                    elements = doc.xpath(xpath)
+                except ImportError:
+                    st.error("Para usar CSS selectors com lxml, instale: pip install cssselect")
+                    elements = []
+        
+        elif selector_type == "HTML":
+            # Se o input é HTML, tenta extrair seletor dele
+            temp_doc = parse_html(selector_input)
+            # Tenta identificar ID ou classe do elemento principal
+            if USE_SELECTOLAX:
+                root = temp_doc.css_first('*')
+                if root and hasattr(root, 'attrs'):
+                    attrs = root.attrs
+                    if attrs.get('id'):
+                        actual_selector = f"#{attrs['id']}"
+                        actual_selector_type = "CSS"
+                        elements = doc.css(actual_selector)
+                    elif attrs.get('class'):
+                        class_name = attrs['class'].split()[0]
+                        actual_selector = f".{class_name}"
+                        actual_selector_type = "CSS"
+                        elements = doc.css(actual_selector)
+                    else:
+                        actual_selector = root.tag
+                        actual_selector_type = "CSS"
+                        elements = doc.css(actual_selector)
+            else:
+                # Para lxml, pega o primeiro elemento
+                if hasattr(temp_doc, 'tag'):
+                    elem_id = temp_doc.get('id')
+                    elem_class = temp_doc.get('class')
+                    if elem_id:
+                        actual_selector = f"//*[@id='{elem_id}']"
+                        actual_selector_type = "XPath"
+                        elements = doc.xpath(actual_selector)
+                    elif elem_class:
+                        actual_selector = f"//*[@class='{elem_class}']"
+                        actual_selector_type = "XPath"
+                        elements = doc.xpath(actual_selector)
+                    else:
+                        actual_selector = f"//{temp_doc.tag}"
+                        actual_selector_type = "XPath"
+                        elements = doc.xpath(actual_selector)
+                else:
+                    # Tenta processar como lista de elementos
+                    for elem in temp_doc:
+                        if hasattr(elem, 'tag'):
+                            elem_id = elem.get('id')
+                            elem_class = elem.get('class')
+                            if elem_id:
+                                actual_selector = f"//*[@id='{elem_id}']"
+                                actual_selector_type = "XPath"
+                                elements = doc.xpath(actual_selector)
+                                break
+                            elif elem_class:
+                                actual_selector = f"//*[@class='{elem_class}']"
+                                actual_selector_type = "XPath"
+                                elements = doc.xpath(actual_selector)
+                                break
+        
+        # Processa elementos encontrados
+        for i, elem in enumerate(elements[:10]):  # Limita a 10 resultados
+            elem_info = {'index': i + 1}
+            
+            if USE_SELECTOLAX:
+                # Para selectolax
+                elem_info['tag'] = elem.tag if hasattr(elem, 'tag') else 'unknown'
+                elem_info['text'] = elem.text(strip=True) if hasattr(elem, 'text') else ''
+                attrs = elem.attrs if hasattr(elem, 'attrs') else {}
+                elem_info['id'] = attrs.get('id', '')
+                elem_info['class'] = attrs.get('class', '')
+                elem_info['href'] = attrs.get('href', '')
+                elem_info['value'] = attrs.get('value', '')
+                elem_info['type'] = attrs.get('type', '')
+                
+                # HTML do elemento
+                try:
+                    elem_info['html'] = elem.html if hasattr(elem, 'html') else ''
+                    if len(elem_info['html']) > 300:
+                        elem_info['html'] = elem_info['html'][:300] + '...'
+                except:
+                    elem_info['html'] = ''
+            else:
+                # Para lxml
+                elem_info['tag'] = elem.tag if hasattr(elem, 'tag') else 'unknown'
+                elem_info['text'] = elem.text_content().strip() if hasattr(elem, 'text_content') else ''
+                elem_info['id'] = elem.get('id', '')
+                elem_info['class'] = elem.get('class', '')
+                elem_info['href'] = elem.get('href', '')
+                elem_info['value'] = elem.get('value', '')
+                elem_info['type'] = elem.get('type', '')
+                
+                # HTML do elemento
+                try:
+                    from lxml import html as lxml_html
+                    elem_info['html'] = lxml_html.tostring(elem, encoding='unicode', method='html')
+                    if len(elem_info['html']) > 300:
+                        elem_info['html'] = elem_info['html'][:300] + '...'
+                except:
+                    elem_info['html'] = ''
+            
+            results.append(elem_info)
+        
+        # Gera código Python baseado na ação - USANDO actual_selector e actual_selector_type
+        if results:
+            if action == "Extrair Texto":
+                if actual_selector_type == "XPath":
+                    code_samples.append(f"""# Extrair texto usando XPath
+from lxml import html
+import requests
+
+url = "SUA_URL_AQUI"
+response = requests.get(url)
+doc = html.fromstring(response.content)
+
+# Encontra elementos
+elements = doc.xpath('{actual_selector}')
+
+# Extrai texto de cada elemento
+for elem in elements:
+    text = elem.text_content().strip() if hasattr(elem, 'text_content') else ''
+    print(text)
+""")
+                elif actual_selector_type == "CSS":
+                    code_samples.append(f"""# Extrair texto usando CSS Selector
+from bs4 import BeautifulSoup
+import requests
+
+url = "SUA_URL_AQUI"
+response = requests.get(url)
+soup = BeautifulSoup(response.content, 'html.parser')
+
+# Encontra elementos
+elements = soup.select('{actual_selector}')
+
+# Extrai texto de cada elemento
+for elem in elements:
+    text = elem.get_text(strip=True)
+    print(text)
+""")
+            
+            elif action == "Extrair Atributo":
+                attr_name = value or 'href'
+                if actual_selector_type == "XPath":
+                    code_samples.append(f"""# Extrair atributo usando XPath
+from lxml import html
+import requests
+
+url = "SUA_URL_AQUI"
+response = requests.get(url)
+doc = html.fromstring(response.content)
+
+# Encontra elementos e extrai atributo
+elements = doc.xpath('{actual_selector}')
+for elem in elements:
+    attr_value = elem.get('{attr_name}', '')
+    print(f"{attr_name}: {{attr_value}}")
+""")
+                elif actual_selector_type == "CSS":
+                    code_samples.append(f"""# Extrair atributo usando CSS Selector
+from bs4 import BeautifulSoup
+import requests
+
+url = "SUA_URL_AQUI"
+response = requests.get(url)
+soup = BeautifulSoup(response.content, 'html.parser')
+
+# Encontra elementos
+elements = soup.select('{actual_selector}')
+for elem in elements:
+    attr_value = elem.get('{attr_name}', '')
+    print(f"{attr_name}: {{attr_value}}")
+""")
+            
+            elif action == "Clicar (Selenium)":
+                code_samples.append(f"""# Clicar em elemento usando Selenium
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+driver = webdriver.Chrome()
+driver.get("SUA_URL_AQUI")
+
+# Aguarda elemento e clica
+element = WebDriverWait(driver, 10).until(
+    EC.element_to_be_clickable((By.{'XPATH' if actual_selector_type == 'XPath' else 'CSS_SELECTOR'}, '{actual_selector}'))
+)
+element.click()
+
+# Continue com suas ações...
+driver.quit()
+""")
+            
+            elif action == "Clicar (Playwright)":
+                code_samples.append(f"""# Clicar em elemento usando Playwright
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    page = browser.new_page()
+    page.goto("SUA_URL_AQUI")
+    
+    # Clica no elemento
+    page.{'xpath' if actual_selector_type == 'XPath' else 'css'}('{actual_selector}').click()
+    
+    # Continue com suas ações...
+    browser.close()
+""")
+            
+            elif action == "Preencher Input":
+                input_value = value or 'SEU_TEXTO_AQUI'
+                code_samples.append(f"""# Preencher input usando Selenium
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+driver = webdriver.Chrome()
+driver.get("SUA_URL_AQUI")
+
+# Encontra input e preenche
+input_element = WebDriverWait(driver, 10).until(
+    EC.presence_of_element_located((By.{'XPATH' if actual_selector_type == 'XPath' else 'CSS_SELECTOR'}, '{actual_selector}'))
+)
+input_element.clear()
+input_element.send_keys('{input_value}')
+
+# Continue com suas ações...
+driver.quit()
+""")
+                
+                code_samples.append(f"""# Preencher input usando Playwright
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    page = browser.new_page()
+    page.goto("SUA_URL_AQUI")
+    
+    # Preenche o input
+    page.{'xpath' if actual_selector_type == 'XPath' else 'css'}('{actual_selector}').fill('{input_value}')
+    
+    # Continue com suas ações...
+    browser.close()
+""")
+            
+            elif action == "Submeter Form":
+                code_samples.append(f"""# Submeter formulário
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+
+driver = webdriver.Chrome()
+driver.get("SUA_URL_AQUI")
+
+# Encontra e submete o formulário
+form = driver.find_element(By.{'XPATH' if actual_selector_type == 'XPath' else 'CSS_SELECTOR'}, '{actual_selector}')
+form.submit()
+
+# OU clica no botão de submit
+# submit_button = form.find_element(By.CSS_SELECTOR, 'button[type="submit"]')
+# submit_button.click()
+
+driver.quit()
+""")
+            
+            # Adiciona informação sobre o seletor usado
+            if selector_type == "HTML":
+                code_samples.insert(0, f"""# Seletor extraído do HTML fornecido:
+# Tipo: {actual_selector_type}
+# Seletor: {actual_selector}
+""")
+        
+        # Junta todos os códigos
+        final_code = "\n\n# " + "="*60 + "\n\n".join(code_samples) if code_samples else "# Nenhum elemento encontrado"
+        
+    except Exception as e:
+        results = []
+        final_code = f"# Erro ao processar seletor: {str(e)}"
+    
+    return results, final_code
+
+# =============================================================================
 # FUNÇÃO DE PESQUISA APRIMORADA
 # =============================================================================
 
@@ -1218,13 +1877,14 @@ def main():
         st.markdown("---")
         
         # Tabs para diferentes análises
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "📋 Listas",
             "📝 Formulários",
             "🔗 Navegação",
             "📄 Conteúdo",
             "📊 Resumo",
-            "🔧 HTML Completo"
+            "🔧 HTML Completo",
+            "🎯 Testador de Seletores"
         ])
         
         # [RESTANTE DAS TABS IGUAL AO CÓDIGO ANTERIOR ATÉ TAB5]
@@ -1498,6 +2158,229 @@ for item in menu_items:
                 file_name=f"html_source_{st.session_state.final_url.replace('https://', '').replace('http://', '').replace('/', '_')[:50]}.html",
                 mime="text/html"
             )
+        
+        # =========================
+        # TAB 7: TESTADOR DE SELETORES
+        # =========================
+        with tab7:
+            st.header("🎯 Testador de Seletores")
+            st.markdown("Teste seletores XPath, CSS ou HTML e gere código Python automaticamente")
+            
+            # Configurações do testador
+            col1, col2, col3 = st.columns([2, 1, 1])
+            
+            with col1:
+                selector_type = st.selectbox(
+                    "Tipo de Seletor:",
+                    ["XPath", "CSS", "HTML"],
+                    help="XPath: /html/body/div[1]\nCSS: .class-name #id\nHTML: Cole o HTML do elemento"
+                )
+            
+            with col2:
+                action = st.selectbox(
+                    "Ação Desejada:",
+                    ["Extrair Texto", "Extrair Atributo", "Clicar (Selenium)", "Clicar (Playwright)", 
+                     "Preencher Input", "Submeter Form"],
+                    help="Escolha a ação que deseja realizar com o elemento"
+                )
+            
+            with col3:
+                if action == "Extrair Atributo":
+                    action_value = st.text_input("Nome do Atributo:", value="href", placeholder="href, class, id, etc")
+                elif action == "Preencher Input":
+                    action_value = st.text_input("Valor do Input:", placeholder="Texto para preencher")
+                else:
+                    action_value = ""
+            
+            # Área de input do seletor
+            selector_input = st.text_area(
+                f"Cole seu {selector_type}:",
+                height=100,
+                placeholder={
+                    "XPath": "/html/body/div[1]/header/nav/ul/li[1]/a",
+                    "CSS": ".navbar .menu-item a",
+                    "HTML": '<li id="menu-item"><a href="/page">Link</a></li>'
+                }.get(selector_type, ""),
+                help="Cole o seletor que deseja testar"
+            )
+            
+            # Botão de teste
+            if st.button("🧪 Testar Seletor", type="primary", disabled=not selector_input):
+                if selector_input:
+                    with st.spinner("Testando seletor..."):
+                        # Usa a URL real da página analisada
+                        actual_url = st.session_state.final_url if st.session_state.final_url else "https://exemplo.com"
+                        
+                        results, code = test_selector(
+                            st.session_state.html_content,
+                            selector_input,
+                            selector_type,
+                            action,
+                            action_value,
+                            actual_url
+                        )
+                        
+                        # Armazena resultados no session state
+                        st.session_state['selector_results'] = results
+                        st.session_state['selector_code'] = code
+                        st.session_state['selected_elements'] = list(range(len(results)))  # Seleciona todos por padrão
+            
+            # Mostra resultados se existirem
+            if 'selector_results' in st.session_state and st.session_state['selector_results']:
+                results = st.session_state['selector_results']
+                code = st.session_state['selector_code']
+                
+                st.success(f"✅ Encontrados {len(results)} elementos!")
+                
+                # Mostra preview dos elementos encontrados
+                st.subheader("📋 Elementos Encontrados:")
+                
+                # Checkbox para selecionar todos
+                select_all = st.checkbox("Selecionar todos", value=True, key="select_all_elements")
+                
+                # Lista de elementos selecionados
+                selected_indices = []
+                
+                for i, result in enumerate(results[:20]):  # Limita visualização a 20
+                    id_str = f"#{result['id']}" if result['id'] else ''
+                    class_str = f".{result['class']}" if result['class'] else ''
+                    
+                    # Checkbox para cada elemento
+                    col_check, col_expand = st.columns([1, 10])
+                    
+                    with col_check:
+                        is_selected = st.checkbox(
+                            "",
+                            value=select_all or i in st.session_state.get('selected_elements', []),
+                            key=f"elem_check_{i}"
+                        )
+                        if is_selected:
+                            selected_indices.append(i)
+                    
+                    with col_expand:
+                        with st.expander(f"Elemento {result['index']}: <{result['tag']}> {id_str} {class_str}"):
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.markdown("**Propriedades:**")
+                                st.text(f"Tag: {result['tag']}")
+                                if result['id']:
+                                    st.text(f"ID: {result['id']}")
+                                if result['class']:
+                                    st.text(f"Class: {result['class']}")
+                                if result['href']:
+                                    st.text(f"Href: {result['href'][:50]}...")
+                                if result['type']:
+                                    st.text(f"Type: {result['type']}")
+                                if result['value']:
+                                    st.text(f"Value: {result['value']}")
+                            
+                            with col2:
+                                st.markdown("**Conteúdo:**")
+                                if result['text']:
+                                    st.text(f"Texto: {result['text'][:100]}...")
+                                
+                                st.markdown("**HTML:**")
+                                st.code(result['html'], language='html')
+                
+                if len(results) > 20:
+                    st.info(f"📊 Mostrando 20 de {len(results)} elementos. O código incluirá todos.")
+                
+                # Gera código específico para elementos selecionados
+                st.subheader("🐍 Código Python Gerado:")
+                
+                # Se há elementos selecionados, mostra informação
+                if selected_indices:
+                    if len(selected_indices) < len(results):
+                        st.info(f"💡 Código gerado para {len(selected_indices)} elementos selecionados de {len(results)} encontrados")
+                        
+                        # Adiciona comentário no código sobre seleção
+                        code_with_selection = f"""# Elementos selecionados: {len(selected_indices)} de {len(results)} encontrados
+# Índices selecionados: {selected_indices[:10]}{'...' if len(selected_indices) > 10 else ''}
+
+""" + code
+                        st.code(code_with_selection, language='python')
+                    else:
+                        st.code(code, language='python')
+                else:
+                    st.warning("⚠️ Nenhum elemento selecionado. Selecione ao menos um elemento.")
+                    st.code(code, language='python')
+                
+                # Botão para copiar código
+                st.download_button(
+                    label="📥 Baixar Código Python",
+                    data=code if len(selected_indices) == len(results) else code_with_selection,
+                    file_name="selector_code.py",
+                    mime="text/plain"
+                )
+                
+            elif 'selector_results' in st.session_state and not st.session_state['selector_results']:
+                st.warning("⚠️ Nenhum elemento encontrado com este seletor")
+                st.info("💡 Verifique se o seletor está correto ou tente um seletor mais genérico")
+                
+                # Ainda mostra o código mesmo sem resultados
+                if 'selector_code' in st.session_state:
+                    st.subheader("🐍 Código Python (Template):")
+                    st.code(st.session_state['selector_code'], language='python')
+            
+            # Dicas e exemplos
+            with st.expander("💡 Dicas e Exemplos de Uso", expanded=False):
+                st.markdown("""
+                ### Exemplos de Seletores:
+                
+                **XPath:**
+                - `/html/body/div[1]/header/nav` - Caminho completo
+                - `//div[@class='content']` - Div com classe específica
+                - `//a[@href='/login']` - Link com href específico
+                - `//input[@type='submit']` - Input do tipo submit
+                - `//button[contains(text(), 'Click')]` - Botão contendo texto
+                
+                **CSS Selector:**
+                - `.class-name` - Elementos com classe
+                - `#element-id` - Elemento com ID
+                - `div.content > p` - Parágrafos filhos diretos
+                - `a[href^='https']` - Links começando com https
+                - `input[type='email']` - Input de email
+                - `button:contains('Submit')` - Botão com texto
+                
+                **HTML:**
+                - Cole diretamente o HTML copiado do DevTools
+                - O sistema tentará identificar IDs e classes automaticamente
+                
+                ### Casos de Uso:
+                
+                1. **Web Scraping**: Extrair dados de páginas
+                2. **Automação**: Preencher formulários automaticamente
+                3. **Testes**: Verificar elementos em páginas
+                4. **Monitoramento**: Acompanhar mudanças em sites
+                """)
+            
+            # Seletores salvos (opcional)
+            if 'saved_selectors' not in st.session_state:
+                st.session_state.saved_selectors = []
+            
+            with st.expander("💾 Seletores Salvos", expanded=False):
+                if st.session_state.saved_selectors:
+                    for i, saved in enumerate(st.session_state.saved_selectors):
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        with col1:
+                            st.text(f"{saved['type']}: {saved['selector'][:50]}...")
+                        with col2:
+                            st.text(saved['action'])
+                        with col3:
+                            if st.button(f"Usar", key=f"use_{i}"):
+                                st.rerun()
+                else:
+                    st.info("Nenhum seletor salvo ainda")
+                
+                # Botão para salvar seletor atual
+                if selector_input and st.button("💾 Salvar Seletor Atual"):
+                    st.session_state.saved_selectors.append({
+                        'type': selector_type,
+                        'selector': selector_input,
+                        'action': action
+                    })
+                    st.success("Seletor salvo!")
     
     # Se não há dados analisados ainda
     elif not st.session_state.html_content:
